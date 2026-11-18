@@ -107,7 +107,16 @@ docker run -d \
 
 ## Cloud Deployment Options
 
-### Railway / Render / Fly.io
+### 1-Click Deploy to Render
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/forbesayush/telegram-orders-bot)
+
+1. Click the button above (or open [Render Blueprint](https://render.com/deploy?repo=https://github.com/forbesayush/telegram-orders-bot)).
+2. Sign in with GitHub.
+3. Fill in your `TELEGRAM_BOT_TOKEN`.
+4. Click **Apply** — Render will build and deploy the bot with automated health checks on port `$PORT`.
+
+### Railway / Fly.io
 1. Connect this GitHub repository.
 2. Set the environment variable `TELEGRAM_BOT_TOKEN` in the service dashboard.
 3. Choose the Dockerfile runtime or Python 3.11 environment (`python -m bot.main`).

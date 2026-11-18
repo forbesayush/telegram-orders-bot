@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: telegram-orders-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m bot.main
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: SCRIPT_URL
+        value: https://script.google.com/macros/s/AKfycbzqOmNRuLVKPAXtS3xwoSRxCzdRp-kOAyeseP9zmNolgp9IPeYyR1cK9hAS0t-2w7XX/exec
+      - key: DATABASE_PATH
+        value: orders.db
+      - key: POLL_MINUTES
+        value: "5"
+      - key: CACHE_TTL_SECONDS
+        value: "60"

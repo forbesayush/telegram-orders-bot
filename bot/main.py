@@ -6,7 +6,9 @@ pagination, inline copying, allowlist gating, and auto-alert polling.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import sys
 
 from telegram import Update
@@ -229,6 +231,49 @@ async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYP
     logger.error("Exception while handling an update: %s", context.error, exc_info=context.error)
 
 
+async def _start_health_server(port: int) -> None:
+    """Start a lightweight HTTP server for Render/cloud platform health checks."""
+
+    async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            await reader.read(1024)
+            response = (
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: text/plain; charset=utf-8\r\n"
+                b"Content-Length: 2\r\n"
+                b"Connection: close\r\n\r\n"
+                b"OK"
+            )
+            writer.write(response)
+            await writer.drain()
+        except (ConnectionResetError, BrokenPipeError, TimeoutError):
+            pass
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except (ConnectionResetError, BrokenPipeError, TimeoutError):
+                pass
+
+    try:
+        server = await asyncio.start_server(handle_client, "0.0.0.0", port)
+        logger.info("Cloud health check server listening on 0.0.0.0:%d", port)
+        asyncio.create_task(server.serve_forever())
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Could not bind health server on port %d: %s", port, exc)
+
+
+async def _on_post_init(app: Application) -> None:
+    """Post initialization hook to start health check server if PORT is set."""
+    port_env = os.getenv("PORT")
+    if port_env:
+        try:
+            port = int(port_env)
+            await _start_health_server(port)
+        except ValueError:
+            logger.warning("Invalid PORT environment variable: %s", port_env)
+
+
 def create_application(config: Config) -> Application:
     """Factory to construct and configure the telegram.ext Application."""
     storage = Storage(config.database_path)
@@ -239,7 +284,7 @@ def create_application(config: Config) -> Application:
         timeout=config.http_timeout,
     )
 
-    app = ApplicationBuilder().token(config.bot_token).build()
+    app = ApplicationBuilder().token(config.bot_token).post_init(_on_post_init).build()
 
     # Store shared services in bot_data
     app.bot_data["config"] = config
