@@ -22,7 +22,10 @@ def build_main_menu(script_url: str) -> tuple[str, InlineKeyboardMarkup]:
         "👋 <b>Welcome to the Orders &amp; Returns Tracker</b>\n\n"
         "Monitor live customer orders, refund submissions, and settlement "
         "progress fetched directly from the master Google Apps Script portal.\n\n"
-        "<i>Select an option below to get started:</i>"
+        "💡 <b>Quick Lookup / Bulk Check:</b>\n"
+        "Send or paste any Order ID(s) here (separated by spaces, commas, or "
+        "newlines) to check their status in Google Apps Script.\n\n"
+        "<i>Or select an option below to browse orders:</i>"
     )
 
     keyboard = [
@@ -227,3 +230,115 @@ def build_alert_message(order: Order, is_new_order: bool) -> tuple[str, InlineKe
     ]
 
     return text, InlineKeyboardMarkup(keyboard)
+
+
+def build_single_order_result(
+    order: Order | None,
+    order_id: str,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Build a detailed view for a single direct order lookup."""
+    if not order:
+        text = (
+            "❌ <b>Order Not Found in Google Apps Script</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"<b>🆔 Order ID:</b> <code>{order_id}</code>\n"
+            "<b>⚠️ Result:</b> <code>Invalid Order ID</code>\n\n"
+            "<i>This Order ID was not found in the Google Apps Script database. "
+            "Please check the ID and try again.</i>"
+        )
+        keyboard = [[InlineKeyboardButton("🔙 Main Menu", callback_data="menu")]]
+        return text, InlineKeyboardMarkup(keyboard)
+
+    form_icon = "✅" if order.return_status == "Refund Form Filled" else "⏳"
+    settle_icon = "✅" if order.settlement_status == "Refund Completed" else "⏳"
+
+    text = (
+        "✅ <b>Order Found in Google Apps Script</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<b>🆔 Order ID:</b> <code>{order.order_id}</code>\n"
+        f"<b>👤 Customer (Sold To):</b> {order.buyer_name}\n"
+        f"<b>💰 Order Amount:</b> ₹{order.amount:.2f}\n"
+        f"<b>📅 Order Date:</b> {order.order_date}\n\n"
+        f"<b>📊 Progress Milestones:</b>\n"
+        f"• Step 1 (Order Confirmation): ✅ {order.order_status}\n"
+        f"• Step 2 (Refund Form): {form_icon} {order.return_status}\n"
+        f"• Step 3 (Final Settlement): {settle_icon} {order.settlement_status}\n\n"
+        f"<b>🔄 Is Return / Refund Case:</b> {'Yes' if order.is_return else 'No'}\n"
+    )
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "📋 Copy Order ID",
+                copy_text=CopyTextButton(text=order.order_id),
+            )
+        ],
+        [InlineKeyboardButton("🔙 Main Menu", callback_data="menu")],
+    ]
+
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def build_batch_orders_result(
+    results: dict[str, Order | None],
+) -> list[tuple[str, InlineKeyboardMarkup]]:
+    """Build formatted messages for a batch of order lookups, splitting if exceeding character limits."""
+    total = len(results)
+    found_orders = [o for o in results.values() if o is not None]
+    found_count = len(found_orders)
+    not_found_count = total - found_count
+
+    header = (
+        "📦 <b>Batch Order Status Report</b>\n"
+        f"<b>Total:</b> {total} | <b>Found:</b> {found_count} | <b>Not Found:</b> {not_found_count}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    )
+
+    chunks: list[str] = []
+    current_chunk = header
+
+    for i, (oid, order) in enumerate(results.items(), start=1):
+        if order is not None:
+            form_icon = "✅" if order.return_status == "Refund Form Filled" else "⏳"
+            settle_icon = "✅" if order.settlement_status == "Refund Completed" else "⏳"
+            block = (
+                f"<b>{i}. 🆔 Order ID:</b> <code>{order.order_id}</code>\n"
+                f"👤 <b>Customer:</b> {order.buyer_name} | 💰 ₹{order.amount:.2f} | 📅 {order.order_date}\n"
+                f"• <b>Step 1 (Order):</b> ✅ {order.order_status}\n"
+                f"• <b>Step 2 (Refund):</b> {form_icon} {order.return_status}\n"
+                f"• <b>Step 3 (Settlement):</b> {settle_icon} {order.settlement_status}\n\n"
+            )
+        else:
+            block = (
+                f"<b>{i}. 🆔 Order ID:</b> <code>{oid}</code> — ❌ <i>Invalid / Not Found</i>\n\n"
+            )
+
+        if len(current_chunk) + len(block) > 3800:
+            chunks.append(current_chunk)
+            current_chunk = block
+        else:
+            current_chunk += block
+
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    messages: list[tuple[str, InlineKeyboardMarkup]] = []
+    valid_ids_str = " ".join(o.order_id for o in found_orders)
+
+    for idx, chunk in enumerate(chunks):
+        is_last = idx == len(chunks) - 1
+        keyboard: list[list[InlineKeyboardButton]] = []
+
+        if is_last and found_orders and len(valid_ids_str) <= 64:
+            keyboard.append(
+                [
+                    InlineKeyboardButton(
+                        "📋 Copy All Valid IDs",
+                        copy_text=CopyTextButton(text=valid_ids_str),
+                    )
+                ]
+            )
+        keyboard.append([InlineKeyboardButton("🔙 Main Menu", callback_data="menu")])
+        messages.append((chunk, InlineKeyboardMarkup(keyboard)))
+
+    return messages

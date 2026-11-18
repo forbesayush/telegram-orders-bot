@@ -53,7 +53,7 @@ class Config:
     seed_order_ids: list[str] = field(default_factory=lambda: list(DEFAULT_SEED_ORDER_IDS))
     database_path: str = "orders.db"
     cache_ttl_seconds: int = 60
-    http_timeout: float = 15.0
+    http_timeout: float = 35.0
 
     @classmethod
     def from_env(cls) -> Config:

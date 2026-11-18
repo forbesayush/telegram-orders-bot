@@ -161,7 +161,7 @@ class Scraper:
 
     async def fetch_order_direct(self, order_id: str, retries: int = 3) -> Order | None:
         """Fetch a single order from the Google Apps Script RPC endpoint with exponential backoff."""
-        url = f"{self.callback_url}?nocache_id={int(time.time() * 1000)}"
+        url = self.callback_url
         request_arg = ["checkStatus", json.dumps([str(order_id)]), None, [0], None, None, 1, 0]
         body = f"request={httpx.URL('', params={'q': json.dumps(request_arg)}).query.decode('utf-8')[2:]}"
 
@@ -178,7 +178,7 @@ class Scraper:
         delay = 1.0
         for attempt in range(retries):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
                     resp = await client.post(url, headers=headers, content=body)
 
                 if resp.status_code == 200:
@@ -196,7 +196,16 @@ class Scraper:
                     for item in parsed:
                         if isinstance(item, list) and len(item) > 1 and item[0] == "op.exec":
                             val = item[1][1] if isinstance(item[1], list) and len(item[1]) > 1 else None
-                            if not val or val == "Invalid Order ID":
+                            if not val or val in ("Invalid Order ID", '"Invalid Order ID"'):
+                                return None
+
+                            if isinstance(val, str) and val.startswith('"') and val.endswith('"'):
+                                try:
+                                    val = json.loads(val)
+                                except json.JSONDecodeError:
+                                    pass
+
+                            if val == "Invalid Order ID":
                                 return None
 
                             data = json.loads(val) if isinstance(val, str) and val.startswith("{") else val
@@ -248,6 +257,21 @@ class Scraper:
                 delay *= 2.0
 
         return None
+
+    async def fetch_orders_batch(
+        self, order_ids: list[str], concurrency: int = 5
+    ) -> dict[str, Order | None]:
+        """Fetch multiple orders from Google Apps Script concurrently."""
+        sem = asyncio.Semaphore(concurrency)
+
+        async def _fetch(oid: str) -> tuple[str, Order | None]:
+            async with sem:
+                res = await self.fetch_order_direct(oid)
+                return oid, res
+
+        tasks = [_fetch(oid) for oid in order_ids]
+        results = await asyncio.gather(*tasks)
+        return dict(results)
 
     async def fetch_all_orders(
         self,

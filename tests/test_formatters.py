@@ -2,10 +2,12 @@
 
 from bot.formatters import (
     build_alert_message,
+    build_batch_orders_result,
     build_copy_all_view,
     build_main_menu,
     build_order_details,
     build_orders_list,
+    build_single_order_result,
 )
 from bot.scraper import Order
 
@@ -104,3 +106,37 @@ def test_build_alert_message():
     assert f"<code>{order.order_id}</code>" in text
     buttons = [btn for row in markup.inline_keyboard for btn in row]
     assert any(b.copy_text and b.copy_text.text == order.order_id for b in buttons)
+
+
+def test_build_single_order_result():
+    """Single order direct result should show full details when found and error when None."""
+    order = _sample_orders(1)[0]
+    text, markup = build_single_order_result(order, order.order_id)
+    assert "✅ <b>Order Found in Google Apps Script</b>" in text
+    assert f"<code>{order.order_id}</code>" in text
+    assert len(markup.inline_keyboard) == 2
+
+    # Missing order
+    not_found_text, not_found_markup = build_single_order_result(None, "999999999999999999")
+    assert "❌ <b>Order Not Found" in not_found_text
+    assert "999999999999999999" in not_found_text
+    assert len(not_found_markup.inline_keyboard) == 1
+
+
+def test_build_batch_orders_result():
+    """Batch orders result should show found orders and missing ones."""
+    orders = _sample_orders(2)
+    results = {
+        orders[0].order_id: orders[0],
+        orders[1].order_id: orders[1],
+        "000000000000000000": None,
+    }
+    messages = build_batch_orders_result(results)
+    assert len(messages) >= 1
+    first_text, _ = messages[0]
+    assert "Batch Order Status Report" in first_text
+    assert "Total:</b> 3" in first_text
+    assert "Found:</b> 2" in first_text
+    assert "Not Found:</b> 1" in first_text
+    assert orders[0].order_id in first_text
+    assert "000000000000000000" in first_text

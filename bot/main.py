@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sys
 
 from telegram import Update
@@ -25,10 +26,12 @@ from telegram.ext import (
 from bot.config import Config
 from bot.formatters import (
     build_alert_message,
+    build_batch_orders_result,
     build_copy_all_view,
     build_main_menu,
     build_order_details,
     build_orders_list,
+    build_single_order_result,
 )
 from bot.scraper import Order, Scraper
 from bot.storage import Storage
@@ -48,13 +51,35 @@ def _is_authorized(user_id: int, allowed_ids: set[int]) -> bool:
     return user_id in allowed_ids
 
 
+def _extract_order_ids(text: str) -> list[str]:
+    """Extract distinct order IDs from user message text."""
+    matches = re.findall(r"\b\d{10,25}\b", text)
+    if not matches:
+        clean = text.strip()
+        if clean and not clean.startswith("/") and clean.lower() not in ("start", "help", "menu", "hi", "hello"):
+            tokens = [t.strip() for t in re.split(r"[\s,;]+", clean) if t.strip()]
+            for token in tokens:
+                if len(token) >= 8 and any(c.isdigit() for c in token):
+                    matches.append(token)
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for oid in matches:
+        if oid not in seen:
+            seen.add(oid)
+            result.append(oid)
+    return result
+
+
 async def generic_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle all incoming user messages (including /start) by rendering the main menu."""
+    """Handle incoming user messages: check order IDs if present, or show main menu."""
     if not update.effective_user or not update.effective_message:
         return
 
     user_id = update.effective_user.id
     config: Config = context.bot_data["config"]
+    scraper: Scraper = context.bot_data["scraper"]
+    storage: Storage = context.bot_data["storage"]
 
     if not _is_authorized(user_id, config.allowed_user_ids):
         logger.warning("Unauthorized access attempt by user_id=%d", user_id)
@@ -64,8 +89,49 @@ async def generic_message_handler(update: Update, context: ContextTypes.DEFAULT_
         )
         return
 
-    text, markup = build_main_menu(config.script_url)
-    await update.effective_message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
+    raw_text = (update.effective_message.text or "").strip()
+    order_ids = _extract_order_ids(raw_text)
+
+    # If no order IDs detected, display standard main menu
+    if not order_ids:
+        text, markup = build_main_menu(config.script_url)
+        await update.effective_message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
+        return
+
+    # Case 1: Single Order ID lookup
+    if len(order_ids) == 1:
+        oid = order_ids[0]
+        status_msg = await update.effective_message.reply_text(
+            f"🔍 <i>Checking order <code>{oid}</code> in Google Apps Script...</i>",
+            parse_mode=ParseMode.HTML,
+        )
+        order = await scraper.fetch_order_direct(oid)
+        if order:
+            storage.record_order(order.to_dict())
+
+        text, markup = build_single_order_result(order, oid)
+        await status_msg.edit_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
+        return
+
+    # Case 2: Batch / Bulk Order IDs lookup
+    total = len(order_ids)
+    status_msg = await update.effective_message.reply_text(
+        f"⏳ <i>Checking <b>{total}</b> orders in Google Apps Script in parallel...</i>",
+        parse_mode=ParseMode.HTML,
+    )
+    results = await scraper.fetch_orders_batch(order_ids, concurrency=5)
+    for ord_obj in results.values():
+        if ord_obj:
+            storage.record_order(ord_obj.to_dict())
+
+    messages = build_batch_orders_result(results)
+    if messages:
+        first_text, first_markup = messages[0]
+        await status_msg.edit_text(first_text, reply_markup=first_markup, parse_mode=ParseMode.HTML)
+        for next_text, next_markup in messages[1:]:
+            await update.effective_message.reply_text(
+                next_text, reply_markup=next_markup, parse_mode=ParseMode.HTML
+            )
 
 
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
