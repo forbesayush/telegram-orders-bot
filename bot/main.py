@@ -105,12 +105,19 @@ async def generic_message_handler(update: Update, context: ContextTypes.DEFAULT_
             f"🔍 <i>Checking order <code>{oid}</code> in Google Apps Script...</i>",
             parse_mode=ParseMode.HTML,
         )
-        order = await scraper.fetch_order_direct(oid)
-        if order:
-            storage.record_order(order.to_dict())
+        try:
+            order = await scraper.fetch_order_direct(oid)
+            if order:
+                storage.record_order(order.to_dict())
 
-        text, markup = build_single_order_result(order, oid)
-        await status_msg.edit_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
+            text, markup = build_single_order_result(order, oid)
+            await status_msg.edit_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
+        except Exception as err:
+            logger.exception("Error querying single order %s", oid)
+            await status_msg.edit_text(
+                f"⚠️ <b>Error querying Google Apps Script:</b>\n<code>{err}</code>",
+                parse_mode=ParseMode.HTML,
+            )
         return
 
     # Case 2: Batch / Bulk Order IDs lookup
@@ -119,19 +126,26 @@ async def generic_message_handler(update: Update, context: ContextTypes.DEFAULT_
         f"⏳ <i>Checking <b>{total}</b> orders in Google Apps Script in parallel...</i>",
         parse_mode=ParseMode.HTML,
     )
-    results = await scraper.fetch_orders_batch(order_ids, concurrency=5)
-    for ord_obj in results.values():
-        if ord_obj:
-            storage.record_order(ord_obj.to_dict())
+    try:
+        results = await scraper.fetch_orders_batch(order_ids, concurrency=8)
+        for ord_obj in results.values():
+            if ord_obj:
+                storage.record_order(ord_obj.to_dict())
 
-    messages = build_batch_orders_result(results)
-    if messages:
-        first_text, first_markup = messages[0]
-        await status_msg.edit_text(first_text, reply_markup=first_markup, parse_mode=ParseMode.HTML)
-        for next_text, next_markup in messages[1:]:
-            await update.effective_message.reply_text(
-                next_text, reply_markup=next_markup, parse_mode=ParseMode.HTML
-            )
+        messages = build_batch_orders_result(results)
+        if messages:
+            first_text, first_markup = messages[0]
+            await status_msg.edit_text(first_text, reply_markup=first_markup, parse_mode=ParseMode.HTML)
+            for next_text, next_markup in messages[1:]:
+                await update.effective_message.reply_text(
+                    next_text, reply_markup=next_markup, parse_mode=ParseMode.HTML
+                )
+    except Exception as err:
+        logger.exception("Error in batch query")
+        await status_msg.edit_text(
+            f"⚠️ <b>Error during batch query:</b>\n<code>{err}</code>",
+            parse_mode=ParseMode.HTML,
+        )
 
 
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -391,7 +405,7 @@ def main() -> None:
     logger.info("Allowed User IDs: %s", config.allowed_user_ids or "Public Access (All)")
 
     app = create_application(config)
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=False)
 
 
 if __name__ == "__main__":
