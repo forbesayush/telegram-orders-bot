@@ -116,6 +116,8 @@ docker run -d \
 3. Fill in your `TELEGRAM_BOT_TOKEN`.
 4. Click **Apply** — Render will build and deploy the bot with automated health checks on port `$PORT`.
 
+On Render, Telegram sends messages to /telegram over HTTPS. A message can wake an idle free instance. Point uptime monitors at /healthz (GET or HEAD). The first reply after idle can take about a minute. Scheduled alerts only run while the process is awake. For continuous alerts, use an always-on instance and run one bot replica.
+
 ### Railway / Fly.io
 1. Connect this GitHub repository.
 2. Set the environment variable `TELEGRAM_BOT_TOKEN` in the service dashboard.
