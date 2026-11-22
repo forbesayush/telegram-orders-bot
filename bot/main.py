@@ -12,6 +12,7 @@ import os
 import re
 import sys
 
+import httpx
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -308,7 +309,27 @@ async def alert_poll_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Catch-all error handler for uncaught exceptions."""
+    from telegram.error import Forbidden
+
+    if isinstance(context.error, Forbidden):
+        logger.warning("Bot was blocked by user or forbidden: %s", context.error)
+        return
     logger.error("Exception while handling an update: %s", context.error, exc_info=context.error)
+
+
+async def _keep_alive_ping(url: str, interval: int = 480) -> None:
+    """Periodically ping self to prevent Render free tier from sleeping."""
+    await asyncio.sleep(60)
+    health_url = f"{url.rstrip('/')}/healthz"
+    logger.info("Starting self-ping keep-alive loop for %s every %ds", health_url, interval)
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        while True:
+            try:
+                resp = await client.get(health_url)
+                logger.info("Keep-alive self-ping response: %d", resp.status_code)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Keep-alive self-ping failed: %s", exc)
+            await asyncio.sleep(interval)
 
 
 async def _start_health_server(port: int) -> None:
@@ -352,6 +373,10 @@ async def _on_post_init(app: Application) -> None:
             await _start_health_server(port)
         except ValueError:
             logger.warning("Invalid PORT environment variable: %s", port_env)
+
+    render_url = os.getenv("RENDER_EXTERNAL_URL")
+    if render_url:
+        asyncio.create_task(_keep_alive_ping(render_url))
 
 
 def create_application(config: Config) -> Application:
