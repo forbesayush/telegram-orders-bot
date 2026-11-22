@@ -6,13 +6,13 @@ pagination, inline copying, allowlist gating, and auto-alert polling.
 
 from __future__ import annotations
 
-import asyncio
+import hmac
 import logging
 import os
 import re
 import sys
 
-import httpx
+from aiohttp import web
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -317,66 +317,49 @@ async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYP
     logger.error("Exception while handling an update: %s", context.error, exc_info=context.error)
 
 
-async def _keep_alive_ping(url: str, interval: int = 480) -> None:
-    """Periodically ping self to prevent Render free tier from sleeping."""
-    await asyncio.sleep(60)
-    health_url = f"{url.rstrip('/')}/healthz"
-    logger.info("Starting self-ping keep-alive loop for %s every %ds", health_url, interval)
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        while True:
+def build_web_service(app: Application, public_url: str) -> web.Application:
+    """Serve uptime checks and accept Telegram deliveries on the hosting port."""
+    service = web.Application()
+    secret = hmac.digest(app.bot.token.encode(), b"telegram-orders-webhook-v1", "sha256").hex()
+
+    async def health(request: web.Request) -> web.Response:
+        return web.Response(text="OK" if app.running else "Starting", status=200 if app.running else 503)
+
+    async def receive(request: web.Request) -> web.Response:
+        supplied = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if not hmac.compare_digest(supplied.encode(), secret.encode()):
+            raise web.HTTPForbidden()
+        payload = await request.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get("update_id"), int):
+            raise web.HTTPBadRequest()
+        update = Update.de_json(payload, app.bot)
+        await app.update_queue.put(update)
+        return web.Response(text="OK")
+
+    async def lifecycle(service: web.Application):
+        async with app:
+            await app.start()
             try:
-                resp = await client.get(health_url)
-                logger.info("Keep-alive self-ping response: %d", resp.status_code)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Keep-alive self-ping failed: %s", exc)
-            await asyncio.sleep(interval)
+                if public_url:
+                    await app.bot.set_webhook(
+                        url=f"{public_url.rstrip('/')}/telegram",
+                        secret_token=secret,
+                        drop_pending_updates=False,
+                    )
+                else:
+                    await app.updater.start_polling(drop_pending_updates=False)
+                yield
+            finally:
+                if app.updater and app.updater.running:
+                    await app.updater.stop()
+                await app.stop()
 
-
-async def _start_health_server(port: int) -> None:
-    """Start a lightweight HTTP server for Render/cloud platform health checks."""
-
-    async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        try:
-            await reader.read(1024)
-            response = (
-                b"HTTP/1.1 200 OK\r\n"
-                b"Content-Type: text/plain; charset=utf-8\r\n"
-                b"Content-Length: 2\r\n"
-                b"Connection: close\r\n\r\n"
-                b"OK"
-            )
-            writer.write(response)
-            await writer.drain()
-        except (ConnectionResetError, BrokenPipeError, TimeoutError):
-            pass
-        finally:
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except (ConnectionResetError, BrokenPipeError, TimeoutError):
-                pass
-
-    try:
-        server = await asyncio.start_server(handle_client, "0.0.0.0", port)
-        logger.info("Cloud health check server listening on 0.0.0.0:%d", port)
-        asyncio.create_task(server.serve_forever())
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Could not bind health server on port %d: %s", port, exc)
-
-
-async def _on_post_init(app: Application) -> None:
-    """Post initialization hook to start health check server if PORT is set."""
-    port_env = os.getenv("PORT")
-    if port_env:
-        try:
-            port = int(port_env)
-            await _start_health_server(port)
-        except ValueError:
-            logger.warning("Invalid PORT environment variable: %s", port_env)
-
-    render_url = os.getenv("RENDER_EXTERNAL_URL")
-    if render_url:
-        asyncio.create_task(_keep_alive_ping(render_url))
+    service.cleanup_ctx.append(lifecycle)
+    service.router.add_get("/", health)
+    service.router.add_get("/healthz", health)
+    if public_url:
+        service.router.add_post("/telegram", receive)
+    return service
 
 
 def create_application(config: Config) -> Application:
@@ -389,7 +372,7 @@ def create_application(config: Config) -> Application:
         timeout=config.http_timeout,
     )
 
-    app = ApplicationBuilder().token(config.bot_token).post_init(_on_post_init).build()
+    app = ApplicationBuilder().token(config.bot_token).build()
 
     # Store shared services in bot_data
     app.bot_data["config"] = config
@@ -430,7 +413,12 @@ def main() -> None:
     logger.info("Allowed User IDs: %s", config.allowed_user_ids or "Public Access (All)")
 
     app = create_application(config)
-    app.run_polling(drop_pending_updates=False)
+    port = os.getenv("PORT")
+    if port:
+        service = build_web_service(app, os.getenv("RENDER_EXTERNAL_URL", ""))
+        web.run_app(service, host="0.0.0.0", port=int(port))
+    else:
+        app.run_polling(drop_pending_updates=False)
 
 
 if __name__ == "__main__":
