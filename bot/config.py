@@ -11,6 +11,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from bot.security import decrypt_token
+
 # Load .env file from project root if present
 _ROOT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(_ROOT_DIR / ".env")
@@ -58,11 +60,26 @@ class Config:
     @classmethod
     def from_env(cls) -> Config:
         """Load configuration from environment variables."""
-        token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+        encrypted_token = os.getenv("TELEGRAM_BOT_TOKEN_ENCRYPTED", "").strip()
+        encryption_key = (
+            os.getenv("BOT_TOKEN_ENCRYPTION_KEY", "").strip()
+            or os.getenv("ENCRYPTION_KEY", "").strip()
+        )
+
+        if encrypted_token:
+            if not encryption_key:
+                raise ValueError(
+                    "TELEGRAM_BOT_TOKEN_ENCRYPTED is set, but BOT_TOKEN_ENCRYPTION_KEY is missing. "
+                    "Please set BOT_TOKEN_ENCRYPTION_KEY to decrypt your token."
+                )
+            token = decrypt_token(encrypted_token, encryption_key)
+        else:
+            token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+
         if not token:
             raise ValueError(
-                "TELEGRAM_BOT_TOKEN environment variable is missing or empty. "
-                "Please set it in your .env file or environment."
+                "Neither TELEGRAM_BOT_TOKEN nor TELEGRAM_BOT_TOKEN_ENCRYPTED is set. "
+                "Please configure your bot token in your .env file or environment."
             )
 
         script_url = os.getenv("SCRIPT_URL", DEFAULT_SCRIPT_URL).strip() or DEFAULT_SCRIPT_URL
